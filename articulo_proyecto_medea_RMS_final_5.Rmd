@@ -1,0 +1,1823 @@
+---
+title: "Efectos de la Privación en la Mortalidad del Municipio de Santander"
+author: "Francisco Parra"
+date: "6 de Octubre de 2020"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+
+# Introducción
+
+Este estudio tiene como objetivo evaluar el efecto de la privación en la mortalidad del municipio de Santander. El estudio es fruto de la participación del Instituto Cantabro de Estadística (ICANE) y el observatorio de salud publica de Canatabria en el proyecto «Mortalidad en áreas pequeñas Españolas y Desigualdades Socioeconómicas y Ambientales» (MEDEA). 
+
+MEDEA es un proyecto de investigación coordinado de 10 grupos, que tiene por objetivo describir los patrones geográficos de mortalidad de diversas ciudades de España y relacionarlos con las características socioeconómicas y ambientales. El proyecto se basa en la sección censal como unidad de análisis. Para el estudio de las desigualdades socioeconómicas se han seleccionado diversos indicadores socioeconómicos simples de los Censos de 2001 y 2011 y se ha elaborado un índice de privación útil para el estudio de las desigualdades socioeconómicas en salud (Dominguez-Berjón et all, 2008).
+
+El equipo de Cantabria ha elaborado a su vez un Indicador Multidimensional de Privación que, además de la información censal, incluye otra información socioeconómica sobre vulnerabilidad (Renta Básica de Insercción y Pensiones no contributivas).
+
+El estudio ha sido realizado con R, en una primera parte se relacionan las librerias que se han utilizado, la base de datos y la cartografía utilizada. En una segunda se describe la estimación realizada para el periodo 1997-2015 de la razón de mortalidad suavizada y la probabilidad de Excesos de riesgo para hombres y mujeres. La tercera se dedica al Indicador de Privación Multidimensional de Cantabria. En la cuarta se presentan los efectos de la privación para las causas de muerte más comunes en hombres y mujeres. Comentandose por ultimo los resultados obtenidos.
+
+
+
+# Instalación y carga de librerías, base de datos y Cartografía.
+
+## Instalación y carga de librerías
+
+
+Para poder realizar los modelos de suavización, concretamente el modelo de Besag,York y Molli (modelo BYM), utilizaremos la librería de R "INLA" que debe instalarse mediante la sintaxis:
+source("http://www.math.ntnu.no/inla/givemeINLA.R"). Una breve descripción de esta función se puede consultar en el Anexo I.
+
+Debido a que la librería INLA está en continuo desarrollo, se recomienda actualizarla cada vez que ejecutemos la sintaxis. La instrucción para actualizarla es la siguiente: inla.upgrade(testing=TRUE)
+
+```{r carga_librerias_analisis_estadistico}
+#install.packages(c("pixmap", "mvtnorm", "numDeriv", "fields","R.utils,"maptools", "spdep", "RColorBrewer", "Hmisc", "gplots")
+#install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
+library(INLA)
+library(maptools)
+library(spdep)
+library(RColorBrewer)
+library(Hmisc)
+library(gplots)
+library(DT)
+```
+
+## Lectura de los datos y la cartografía
+
+En el siguiente paso abriremos los objetos de R que contienen los valores observados,los valores esperados. El metodo seguido para obtener los valores observados y esperados, se describe en el Anexo II.
+
+
+```{r include=FALSE}
+#load("~/ICANE/medea/Medea III/santander.RData")
+library(medear)
+load("santander.RData")
+resultado=medear::procesa_datos(santander)
+str(resultado$Obs)
+str(resultado$Exp)
+#resultado$Exp[1:16,1,1,1]
+#resultado$Exp[1,,1,1]
+#resultado$Exp[1,1,1,]
+```
+
+
+
+Además se importará la cartografía necesaria para calcular la matriz de vecindades y representar gráficamente los mapas.
+
+
+
+Leeremos la cartografía y la asignaremos al objeto Carto mediante la siguiente sintaxis:
+```{r}
+Carto<-rgdal::readOGR("cartografia_santander.shp")
+```
+
+
+
+Dibujamos la cartografía con sus ejes de coordenadas mediante el siguiente comando:
+```{r mapas}
+plot(Carto, axes=T)
+
+```
+
+# Construcción de la matriz de vecindad
+
+Para continuar con el análisis, debemos tener un archivo que contenga toda la información de las vecindades entre áreas. Una área se considerará vecina de otra si comparte frontera. Este archivo se ha facilitado con los datos y es el que tiene extensión “.inla”.
+
+
+Para obtener la información de las vecindades utilizaremos la función poly2nb de la librería maptools.
+
+```{r vecindades}
+x.nb<-poly2nb(Carto)
+head(x.nb)
+
+```
+
+crearemos la función nb2inla (autor: Carlos Vergara-Hernandez) que permitirá crear un archivo con la información de las vecindades en el formato que precisa la librería INLA.
+
+```{r nb2inla}
+nb2inla <-function(file, nb)
+{
+n<-length(nb)
+if(!file.create(file))
+{
+stop("Cannot open file")
+}
+txt<-paste(n, "\n", sep="")
+cat(txt, file=file, append = TRUE)
+for(i in 1:length(nb))
+{
+txt<-paste(c(i, length(nb[[i]]), nb[[i]]), collapse=" ")
+txt<-paste(txt, "\n",sep="")
+cat(txt, file=file, append = TRUE)
+}
+}
+```
+
+
+Finalmente, ejecutando la función nb2inla obtendremos el archivo Santander_nb.inla,con la información sobre las vecindades, que quedará guardado en el directorio de trabajo definido anteriormente
+
+```{r Santander_nb}
+nb2inla("Santander_nb.inla", x.nb)
+```
+
+
+# Cálculo de las Razones de Mortalidad Estandarizadas suavizadas (RMEs) y Probabilidades de Exceso de Riesgo (PRP)
+
+Se trata de un estudio ecológico a nivel de área pequeña, por ello ha sido necesario utilizar en el análisis una metodología que tenga en cuenta la estructura espacial de los datos. En concreto el propuesto por Besag,York y Mollie que incluye dos efectos aleatorios: uno recoge la dependencia espacial y el otro la sobredispersión desestructurada (Anexo I).
+
+Para describir la sintaxis hemos tomado como ejemplo “todas las causas” en la ciudad de Santander. Recordemos que el periodo de estudio es 1997-2015.
+
+
+## Análisis del periodo (Estandarización interna con tasas específicas de referencia media 1997-2015, Hombres)
+
+
+```{r include=FALSE}
+esp=data.frame(Esp=colSums(resultado$Exp[,1,,22]))
+obs=data.frame(Obs=colSums(resultado$Obs[,1,,22]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+region <- 1:length(x.nb)
+```
+
+
+```{r include=FALSE}
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E)
+```
+
+Definimos la fórmula del modelo (formula1) y ejecutamos la función "inla". Así,obtendremos las RME suavizadas para cada sección censal. También obtendremos la probabilidad de que la RMEs sea mayor que 100 (probabilidad de exceso de riesgo) para cada sección censal. 
+
+
+
+```{r}
+sdunif       <- "expression:
+  logdens=log(0.5)-log_precision/2;
+  return(logdens);"
+formula1 <- O ~ f(
+  region.struct,
+  model = "bym",
+  graph = "Santander_nb.inla",
+  hyper = list(prec.unstruct = list(prior = sdunif), prec.spatial = list(prior = sdunif))
+)
+resultado.p1 <- inla(formula1, family="poisson", data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+```
+
+
+
+```{r}
+summary(resultado.p1)
+# Las RMEs de cada área las obtenemos mediante la siguiente sintaxis:
+RMEs.p1 <- resultado.p1$summary.fitted.values$mean*100
+# Para obtener la probabilidad de que la RMEs sea superior a 100 para cadaáreaejecutaremos la siguiente sintaxis:
+PRP.p1 <- 1-resultado.p1$summary.linear.predictor[,"0 cdf"]
+```
+
+Representaremos la RMEs mediante mapas de septiles (Figura 1) donde los colores verdes representan lasáreas con mayor defecto de mortalidad, mientras que las áreas con mayor exceso de mortalidad son representadas en tonos marrones.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(RMEs.p1 , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"BrBG")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title("Figura 1: Mortalidad Total 1997-2015. RME's.Hombres")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+Con el objeto de cuantificar la evidencia estadística que proporcionan las estimaciones del riesgo en cada sección censal crearemos mapas de la probabilidad de exceso de riesgo (RMEs>100) (Figura 2). Para representar estas probabilidades en el mapa consideraremos la siguiente segmentación: (0,2; 0,4; 0,6;....). Utilizaremos tonalidades verdes para los riesgos relativos con baja probabilidad de ser superior a 100 (áreas con defecto de riesgo), rojas para los riesgos relativos con alta probabilidad (áreas con exceso de riesgo) y el rango intermedio lo representaremos en amarillo.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut(PRP.p1, c(seq(0,1,0.2)), include.lowest=TRUE)
+#Cortes <- cut2(PRP.p1,g=5)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(5,"RdYlGn")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F, main="")
+title("Figura 2: Mortalidad Total 1997-2015.Probabilidad de exceso de riesgo (RME's>100).Hombres",cex.main = 1,font.main=1)
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+
+```
+
+Para observar la forma de la distribución de la RMEs representaremos su función de densidad (Figura nº 3). En su interior se muestran los colores correspondientes a los grupos de valores utilizados en la representación geográfica de las RMEs. La función de densidad permite apreciar con detalle el rango de valores de la RMEs, el cual no es visible en el mapa.
+
+```{r echo=FALSE}
+par(mar=c(5,5,5,5))
+RR <- RMEs.p1
+Cortes <- cut2(RR, g=7, onlycuts=T)
+mypalette<-brewer.pal(7,"BrBG")
+mipaleta<-mypalette[length(mypalette):1]
+aux <- density(RR, na.rm=T, from=min(50,min(RR)), to=max(RR)+50)
+n <- length(aux$x)
+qx <- aux$x
+qy <- aux$y
+colores <- as.numeric(cut2(qx, Cortes[c(-1,-8)]))
+plot(aux,main="Figura 3. Función de densidad de la RMEs.Hombres", ylab="Densidad",
+xlab="RMEs", frame.plot=F, xlim=c(0,max(RR)+100))
+for(i in 1:(length(Cortes)-1)){
+if(any(colores==i)){segments(qx[colores==i], rep(0,sum(colores==i)),
+qx[colores==i],qy[colores==i],lwd=3,col=mipaleta[i])}}
+lines(aux)
+```
+
+## Análisis del periodo (Estandarización interna con tasas específicas de referencia media 1997-2015, Mujeres)
+
+
+
+```{r include=FALSE}
+esp=data.frame(Esp=colSums(resultado$Exp[,2,,22]))
+obs=data.frame(Obs=colSums(resultado$Obs[,2,,22]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+```
+
+
+```{r include=FALSE}
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E)
+```
+
+Definimos la fórmula del modelo (formula1) y ejecutamos la función "inla". Así,obtendremos las RME suavizadas para cada sección censal. También obtendremos la probabilidad de que la RMEs sea mayor que 100 (probabilidad de exceso de riesgo) para cada sección censal. Todos los resultados de este modelo se guardarán en el objeto "resultado.p1".
+
+```{r}
+sdunif       <- "expression:
+  logdens=log(0.5)-log_precision/2;
+  return(logdens);"
+formula1 <- O ~ f(
+  region.struct,
+  model = "bym",
+  graph = "Santander_nb.inla",
+  hyper = list(prec.unstruct = list(prior = sdunif), prec.spatial = list(prior = sdunif))
+)
+resultado.p1 <- inla(formula1, family="poisson", data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+```
+
+
+
+```{r echo=FALSE}
+summary(resultado.p1)
+# Las RMEs de cada área las obtenemos mediante la siguiente sintaxis:
+RMEs.p1 <- resultado.p1$summary.fitted.values$mean*100
+# Para obtener la probabilidad de que la RMEs sea superior a 100 para cadaáreaejecutaremos la siguiente sintaxis:
+PRP.p1 <- 1-resultado.p1$summary.linear.predictor[,"0 cdf"]
+summary(PRP.p1)
+```
+
+Representaremos la RMEs mediante mapas de septiles (Figura nº 4) donde los colores verdes representan las áreas con mayor defecto de mortalidad, mientras que lasáreas con mayor exceso de mortalidad son representadas en tonos marrones.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(RMEs.p1 , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"BrBG")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title("Figura 4: Mortalidad Total 1997-2015. RME's.Mujeres")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+
+
+Con el objeto de cuantificar la evidencia estadística que proporcionan las estimaciones del riesgo en cada sección censal crearemos mapas de la probabilidad de exceso de riesgo (RMEs>100) (Figura nº 5). 
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut(PRP.p1, c(seq(0,1,0.2)), include.lowest=TRUE)
+#Cortes <- cut2(PRP.p1,g=5)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(5,"RdYlGn")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F, main="")
+title("Figura 5: Mortalidad Total 1997-2015.Probabilidad de exceso de riesgo (RME's>100).Mujeres",cex.main = 1,font.main=1)
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+
+```
+
+Para observar la forma de la distribución de la RMEs representaremos su función de densidad (Figura nº 6). 
+
+```{r echo=FALSE}
+par(mar=c(5,5,5,5))
+RR <- RMEs.p1
+Cortes <- cut2(RR, g=7, onlycuts=T)
+mypalette<-brewer.pal(7,"BrBG")
+mipaleta<-mypalette[length(mypalette):1]
+aux <- density(RR, na.rm=T, from=min(50,min(RR)), to=max(RR)+50)
+n <- length(aux$x)
+qx <- aux$x
+qy <- aux$y
+colores <- as.numeric(cut2(qx, Cortes[c(-1,-8)]))
+plot(aux,main="Figura 6.Función de densidad de la RMEs.Mujeres", ylab="Densidad",
+xlab="RMEs", frame.plot=F, xlim=c(0,max(RR)+100))
+for(i in 1:(length(Cortes)-1)){
+if(any(colores==i)){segments(qx[colores==i], rep(0,sum(colores==i)),
+qx[colores==i],qy[colores==i],lwd=3,col=mipaleta[i])}}
+lines(aux)
+```
+
+
+
+# Indicador de privación Multidimensional de Cantabria
+
+## Indice de privacion MEDEA
+
+Las etapas seguidas en la construcción del indicador de privación MEDEA (http://scielo.isciii.es/scielo.php?script=sci_arttext&pid=S0213-91112008000300002) fueron las siguientes:
+
+1. Identificación de los indicadores disponibles, asignándolos en nuestro marco conceptual a la dimensión correspondiente. Se valoraron inicialmente las variables censales que podían considerarse candidatas a detectar diferencias socioeconómicas y de privación en el sentido expuesto en la introducción, intentando proporcionar validez de contenido al futuro índice.
+
+2. Estudio de las correlaciones entre los indicadores socioeconómicos.
+
+3. Análisis de las correlaciones entre los indicadores contemplados inicialmente para su posible inclusión en el índice y el análisis dimensional de éstos. Se usó el análisis de componentes principales, con la extracción de distintas componentes, para identificar las variables que podrían combinarse en un índice, estableciendo la estructura de correlaciones entre ellas. La interpretación de los factores se llevó a cabo sobre la solución rotada ortogonalmente según el método varimax.
+
+4. Agregación de los indicadores seleccionados en el primer componente del análisis anterior mediante la extracción de un único eje por componentes principales. 
+
+La construcción del índice de privación resulta de la combinación de los siguientes indicadores:
+
+(1) Porcentaje de población en paro.
+
+(2) Porcentaje de asalariados eventuales.
+
+(3) Porcentaje de trabajadores manuales
+
+(4) Porcentaje de población con instrucción insuficiente. 
+
+(5) Porcentaje de población juvenil con instrucción insuficiente, 
+
+usando como valores de peso los de las saturaciones obtenidas en esta extracción.
+
+## Atlas de la Vulnerabilidad Urbana en España 2001 y 2011
+
+El Atlas de la Vulnerabilidad Urbana en España 2001 y 2011 (Ministerio de Fomento,2015) es una aplicación web que ofrece información estadística a nivel de sección censal y en todos los municipios de España acerca de diversas variables referidas a la vulnerabilidad urbana, generando mapas temáticos de diferentes indicadores. El Atlas se ha realizado a partir de los datos de los Censos de Población y Vivienda del Instituto Nacional de Estadística (INE) de los años 2001 y 2011.
+
+En el atlas se presentan 57 mapas temáticos, correspondientes a 24 Indicadores de Vulnerabilidad Urbana y a 33 variables estadísticas complementarias. Los Indicadores de Vulnerabilidad son datos relativos, expresados mediante porcentajes, y se representan con mapas de coropletas. Las variables estadísticas ofrecen valores absolutos (población, viviendas, etc.), y se representan mediante símbolos que pueden superponerse a las coropletas.
+
+
+Los mapas de los indicadores de vulnerabilidad urbana se organizan en 4 temas: 
+
+
+Vulnerabilidad Sociodemográfica (5 indicadores y 8 variables), 
+
+Vulnerabilidad Socioeconómica (6 indicadores y 10 variables),
+
+Vulnerabilidad Residencial (8 indicadores y 9 variables) y 
+
+Vulnerabilidad Subjetiva (5 indicadores y 6 variables, que sólo están disponibles para el Censo de 2001). 
+
+
+De los 24 Indicadores, se consideran Indicadores Básicos de Vulnerabilidad Urbana (IBVU) los siguientes:
+
+Porcentaje de población en paro y Porcentaje de población sin estudios, que son comunes para 2001 y 2011 y Porcentaje de población en viviendas sin servicio o aseo, como indicador de las carencias en las viviendas en 2001, sustituido por el Porcentaje de viviendas en edificios en estado de conservación ruinoso,malo o deficiente para la fecha de referencia de 2011.
+
+Los Indicadores Básicos de Vulnerabilidad Urbana (IBVU) que se han empleado en el Análisis Urbanístico de Barrios Vulnerables en España para la identificación de barrios vulnerables. Estos barrios se identifican cuando estos indicadores superan –en las secciones censales que los componen- unos determinados valores de referencia con respecto a los valores medios nacionales.
+
+
+El listado de indicadores de vulnerabilidad urbana, según temas, que pueden consultarse en la aplicación web : https://www.mitma.gob.es/areas-de-actividad/arquitectura-vivienda-y-suelo/urbanismo-y-politica-de-suelo/observatorio-de-la-vulnerabilidad-urbana/atlas-de-la-vulnerabilidad-urbana/atlas-de-las-vulnerabilidad-urbana-en-espan%CC%83a
+
+
+## Indice de Privación Multidimensional de Cantabria
+
+La construcción de un indicador se suele basar en 3 fases: 
+
+a) selección de los indicadores o variables a incluir; 
+
+b) definición de las dimensiones conceptuales o dominios, medidos por uno o más indicadores, y 
+
+c) definición del índice, constituido por varias dimensiones. 
+
+La experiencia acumulada en la elaboración de indicadores a niveles censales en España, y la disponibilidad de estadísticos a estos niveles para la ciudad de Santander, determina que en Cantabria optemos por construir un indicador a partir de los siguientes indicadores individuales y dominios:
+
+a) Vulnerabilidad demográfica
+
+Porcentaje de población de 75 años y más.
+
+Porcentaje de hogares unipersonales de mayores de 64 años
+
+Porcentaje de hogares con un adulto y un menor o más.
+
+Porcentaje de población extranjera.
+
+Porcentaje de población extranjera infantil.
+
+b) Vulnerabilidad de vivienda
+
+Porcentaje de viviendas con menos de 30 m²
+
+Superficie media por habitante (m²).
+
+Porcentaje de población en viviendas sin servicio o aseo.
+
+Porcentaje de población en viviendas sin calefación.
+
+Porcentaje viviendas en edificios anteriores a 1951.
+
+Porcentaje de viviendas en alquiler o cesion.
+
+c) Vulnerabilidad social (indicador Medea)
+
+Porcentaje de población en paro. 
+
+Porcentaje de asalariados eventuales.
+
+Porcentaje de trabajadores manuales
+
+Porcentaje de población sin estudios. 
+
+Porcentaje de población juvenil sin estudios. 
+
+d) Pobreza monetaria
+
+Porcentaje de población que cobra la Renta Social Básica
+
+Porcentaje de población que cobra pensiones no contributivas
+
+```{r, include=FALSE}
+# Lectura de indicadores elementales
+
+#setwd("Y:/proyecto medea/Medea III")
+RentaBasica <-read.csv("RentaBasica.csv",header=TRUE,sep = ";",dec=",")
+PNC_2005 <-read.csv("PNC_2005.csv",header=TRUE,sep = ";",dec=",")
+Medea <-read.csv("indicador_medea.csv",header=TRUE,sep = ";",dec=",")
+sociodemo <-read.csv("Vulnerabilidad_sociodemo.csv",header=TRUE,sep = ";",dec=",")
+residencial <-read.csv("Vulnerabilidad_residencial.csv",header=TRUE,sep = ";",dec=",")
+pob_m <- read.csv("pob_m_santander.csv",header=TRUE,sep=";")
+pob_m[is.na(pob_m)] <- 0
+pob_m <- subset(pob_m,pob_m$ano==2005)
+pob_h <- read.csv("pob_h_santander.csv",header=TRUE,sep=";")
+pob_h[is.na(pob_h)] <- 0
+pob_h <- subset(pob_h,pob_h$ano==2005)
+
+```
+
+### Indicador demográfico 2001
+
+Para elaborar el indicador de vivienda se usa el análisis de componentes principales, con la extracción de la primera componente principal, para reducir la dimensión de los indicadores en un solo índice. 
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+demo01=sociodemo[1:124,c(2,4,6,8,10)]
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(demo01))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-demo01
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 7: Componentes Principales del Indicador de demográfico")
+summary(resultados.pc1,loadings=TRUE)
+indicador1.01<-data.frame(CODIGO=sociodemo$SECC[1:124],Indice=resultados.pc1$scores[,1:1])
+```
+
+En la Figura nº 8 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador1.01$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 8. Vulnerabilidad demográfica 2001")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+### Indicador demográfico 2011
+
+Para elaborar el indicador de vivienda se usa el análisis de componentes principales, con la extracción de la primera componente principal, para reducir la dimensión de los indicadores en un solo índice. 
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+demo11=sociodemo[1:124,c(3,5,7,9,11)]
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(demo11))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-demo11
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 9: Componentes Principales del Indicador de demográfico")
+summary(resultados.pc1,loadings=TRUE)
+indicador1.11<-data.frame(CODIGO=sociodemo$SECC[1:124],Indice=resultados.pc1$scores[,1:1])
+```
+
+En la Figura nº 10 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador1.11$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 10. Vulnerabilidad demográfica 2011")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+### Indicador vivienda 2001
+
+Para elaborar el indicador de vivienda se usa el análisis de componentes principales, con la extracción de la primera componente principal, para reducir la dimensión de los indicadores en un solo índice. 
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+residencial01=residencial[,2:6]
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(residencial01))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-residencial01
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 11: Componentes Principales del Indicador de Vivienda")
+summary(resultados.pc1,loadings=TRUE)
+indicador2.01<-data.frame(CODIGO=residencial$SECC,Indice=resultados.pc1$scores[,1:1])
+```
+
+En la Figura nº 12 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador2.01$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 12. Vulnerabilidad vivienda 2001")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+
+
+
+
+### Indicador vivienda 2011
+
+Para elaborar el indicador de vivienda se usa el análisis de componentes principales, con la extracción de la primera componente principal, para reducir la dimensión de los indicadores en un solo índice. 
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+residencial11=residencial[,7:11]
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(residencial11))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-residencial11
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 13: Componentes Principales del Indicador de Vivienda")
+summary(resultados.pc1,loadings=TRUE)
+indicador2.11<-data.frame(CODIGO=residencial$SECC,Indice=resultados.pc1$scores[,1:1])
+```
+
+
+En la Figura nº 14 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador2.11$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 14. Vulnerabilidad vivienda 2011")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+### Indicador social 2001.
+
+
+El indicador social es el indicador de privación construido para Medea. En la Figura nº 15 se Cartografían el indicador para 2001.
+
+
+```{r echo=FALSE}
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(Medea$pr_2001.N.24.15 , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 15. Vulnerabilidad social 2001")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+
+
+
+## Indicador social 2011.
+
+El indicador social es el indicador de privación construido para Medea.. En la Figura nº 16 se Cartografían el indicador para 2011.
+
+
+```{r echo=FALSE}
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(Medea$pr_2011.N.24.15 , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 16. Vulnerabilidad Social 2011")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+### Indicador pobreza monetaria 2001
+
+
+
+En la figura 17 se representa la población que cobra la Renta Social Básica en julio de 2005 en cada sección censal, que es el único ejercicio para el que hemos podido obtener resultados a nivel de sección censal, en la figura 19 se representa, también para ese mismo ejercicio, la población que percibe pensiones no contributivas al 31 de diciembre de 2005, y en la figura 20 el porcentaje de población que percibe las dos rentas sociales en 2005 en cada sección censal de Santander, que es el indicador con el que se va a aproximar la vulnerabilidad monetaria.
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+# Calculamos los indicadores en términos per_capita
+pob_2005=data.frame(hombres=rowSums(pob_h[,5:25]),mujeres=rowSums(pob_m[,5:25]))
+pob_2005$total=pob_2005$hombres+pob_2005$mujeres
+pob_2005$SECC=pob_h[,26]
+PNC_2005$PNCpc=PNC_2005$pnc/pob_2005$total
+PNC_2005$RSBpc=PNC_2005$rbs/pob_2005$total
+PNC_2005$TOTALpc=(PNC_2005$rbs+PNC_2005$pnc)/pob_2005$total
+# Representación gráfica Renta Básica
+par(mar=c(1,1,1,1))
+Cortes <- cut2(PNC_2005$rbs, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 17. Renta Social Básica 2005")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+# Representación gráfica pension contributiva
+par(mar=c(1,1,1,1))
+Cortes <- cut2(PNC_2005$pnc, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 18. Pensiones no Contributivas 2005")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+
+# Cartografío Totales per capita
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(PNC_2005$TOTALpc, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 19. Vulnerabilidad monetaria 2005")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+## Indicador pobreza monetaria 2011
+
+En la Figura 20 se representa la población que cobra la Renta Social Básica en julio de 2017 en cada sección censal, que es el único ejercicio para el que hemos podido obtener resultados a nivel de sección censal, en la Figura 21 se representa, también para ese mismo ejercicio, la población que percibe pensiones no contributivas al 31 de diciembre de 2017, y en la Figura 22 el porcentaje de población que percibe las dos rentas sociales en 2017 en cada sección censal de Santander, que es el indicador con el que se va a aproximar la vulnerabilidad monetaria.
+
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+# Modifico el seccionado
+
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907501011,3907501009,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907502027,3907502014,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907502024,3907502023,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508014,3907502023,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907504012,3907504010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907507021,3907504014,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508001,3907505008,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508017,3907505008,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508026,3907505008,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907507015,3907507013,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907507019,3907507017,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508007,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508018,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508023,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508024,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508028,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508009,3907508008,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508011,3907508010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508012,3907508010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508019,3907508010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508027,3907508010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508022,3907508016,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508029,3907508020,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508025,3907508021,RentaBasica$CODSEC)
+
+# obtengo los datos con las nuevas secciones
+
+RBS=tapply(RentaBasica$RBS,RentaBasica$CODSEC,sum)
+PNC=tapply(RentaBasica$PNC,RentaBasica$CODSEC,sum)
+POB=tapply(RentaBasica$POB,RentaBasica$CODSEC,sum)
+SUB=(RBS+PNC)/POB
+RentaBasica2=data.frame(RBS,PNC,POB,SUB)
+
+
+
+
+# Cartografío la renta básica
+
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(RentaBasica2$RBS, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 20. Renta Básica Social 2017")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+
+
+#Cartografío Pensiones No Contributivas
+
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(RentaBasica2$PNC, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 21. Pensiones no Contributivas 2017")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+
+
+
+
+
+#Cartografia Renta Básica y PNC sobre Poblacion
+
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(RentaBasica2$SUB, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 22. Vulnerabilidad monetaria 2017")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+
+### Elaboración del Índice de privación compuesto de Cantabria 2001
+
+Para elaborar el índice de privación Multidimensional que combina las 4 dimensiones analizadas previamente, se usa también el análisis de componentes principales, con la extracción de la primera componente principal para reducir la dimensión de los indicadores en un solo índice
+
+
+```{r echo=FALSE}
+indice01=data.frame(demografico=indicador1.01$Indice,vivienda=indicador2.01$Indice,social=Medea$pr_2001.N.24.15,monetario=PNC_2005$TOTALpc)
+cor(indice01)
+```
+
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(indice01))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-indice01
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 23: Componentes Principales del Indicador multidimensional")
+summary(resultados.pc1,loadings=TRUE)
+indicador01<-data.frame(CODIGO=residencial$SECC,Indice=resultados.pc1$scores[,1:1])
+save(indicador01,file="Privacion_CAN_01.Rdata")
+```
+
+
+En la Figura nº 24 se Cartografían los resultados obtenidos.
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador01$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 24. Privación Multidimensional 2001")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+## Elaboración del Índice de privación Multimensional de Cantabria 2011
+
+Para elaborar el índice de privación Multidimensional que combina las 4 dimensiones analizadas previamente, se usa también el análisis de componentes principales, con la extracción de la primera componente principal para reducir la dimensión de los indicadores en un solo índice
+
+
+```{r, include=FALSE}
+
+indice11=data.frame(demografico=indicador1.11$Indice,vivienda=indicador2.11$Indice,social=Medea$pr_2011.N.24.15,monetario=SUB)
+cor(indice11)
+```
+
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(indice11))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-indice11
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 25: Componentes Principales del Indicador Multidimensional")
+summary(resultados.pc1,loadings=TRUE)
+indicador11<-data.frame(CODIGO=residencial$SECC,Indice=resultados.pc1$scores[,1:1])
+save(indicador11,file="Privacion_CAN.Rdata")
+```
+
+En la Figura nº 26 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(-indicador11$Indice, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 26. Privación Multidimensional 2011")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+
+# Regresión ecologica INLA
+
+
+Para realizar la regresión ecológica INLA obtenemos el riesgo de morir asociado a la privación (privación MEDEA 3 y Multidimensional ambas calculadas principalmente con datos del Censo 2011) en el periodo de estudio. Se han tomado los valores esperados calculados a partir de las tasas específicas por edad del periodo 1997-2015. Las tasas específicas se han calculado teniendo en cuenta toda la ciudad de Santander (estandarización interna).
+
+## Resultados hombres
+
+### Privación Medea 2011
+
+
+```{r include=FALSE}
+esp=data.frame(Esp=colSums(resultado$Exp[,1,,22]))
+obs=data.frame(Obs=colSums(resultado$Obs[,1,,22]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=(resultado$privacion$privacion_2011+resultado$privacion$privacion_2001)/2
+```
+
+
+
+```{r include=FALSE}
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=Privacion)
+```
+
+Definimos la fórmula del modelo y ejecutamos la función "inla".
+
+
+
+```{r}
+sdunif       <- "expression:
+  logdens=log(0.5)-log_precision/2;
+  return(logdens);"
+A.orth  <-  rbind(
+  c(rep(0, 124), Datos$E),
+  c(rep(0, 124), Datos$Privacion * E)
+)
+
+formula2 <- O ~ Privacion + f(
+  region.struct,
+  model       = "bym",
+  graph       = "Santander_nb.inla",
+  hyper       = list(
+    prec.unstruct = list(prior = sdunif),
+    prec.spatial  = list(prior = sdunif)
+  ),
+  extraconstr = list(A = A.orth, e = rep(0, 2)),
+  rankdef     = 2,
+  constr      = FALSE
+)
+resultado.p1 <- inla(
+  formula           = formula2,
+  family            = "poisson",
+  data              = Datos,
+  E                 = E,
+  control.compute   = list(dic = TRUE, cpo = TRUE),
+  control.predictor = list(compute = TRUE, cdf = c(log(1))),
+  control.inla      = list(strategy = "laplace", int.strategy = "grid")
+)
+resultado.p1 <- inla(formula2, family="poisson", data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+```
+
+```{r echo=FALSE}
+summary(resultado.p1)
+# Las RMEs de cada área las obtenemos mediante la siguiente sintaxis:
+RMEs.p1 <- resultado.p1$summary.fitted.values$mean*100
+```
+
+
+
+```{r include=FALSE}
+#Creamos las funciones "RR", "esperanza" y "cuantiles" que nos permitiránn de ahora en adelante calcular la distribución a posteriori del RR, su media a posteriori e intervalo de credibilidad al 95%, respectivamente.
+
+#R <- function(x){inla.marginal.transform(function(y) exp(y), x)}
+esperanza <- function(x){inla.emarginal(function(y) y, x)}
+cuantiles <- function(x){inla.qmarginal(c(0.025, 0.975), x)}
+# El RR asociado a la privación en el periodo lo obtenemos mediante la siguiente sintaxis:
+
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+
+
+# Calculamos la media a posteriori del RR:
+
+E.rr.p1 <- esperanza(marginal.beta2)
+
+# Calculamos el intervalo de credibilidad al 95%:
+
+q.rr.p1 <- cuantiles(marginal.beta2)
+
+```
+
+Representamos gráficamente la función de densidad de la distribución a posteriori del Riesgo Relativo (RR) (Figura  nº27). 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Graficamos la distribución a posteriori del RR
+post.RR.p1 <- inla.smarginal(marginal.beta2)
+summary(post.RR.p1)
+plot(post.RR.p1,lty=1,main="",type="l",ylab="Densidad",xlab="Riesgo Relativo",lwd=2,xlim=c(min(post.RR.p1$x),max(post.RR.p1$x)),ylim=c(min(post.RR.p1$y),max(post.RR.p1$y)))
+title(main="Figura 27. distribución a posteriori del RR\n Santander - total. privación Medea. Hombres",cex.sub=0.5, cex.main = 0.8 ,font.main= 1, col.main= "black")
+
+```
+
+En la tabla nº1, recogemos los resultados obtenidos.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Creamos el objeto "tabla1" para guardar los RR y su intervalo de credibilidad al 95%, según la privación, para cada periodo:
+
+n=22
+esp=data.frame(Esp=colSums(resultado$Exp[,1,,n]))
+obs=data.frame(Obs=colSums(resultado$Obs[,1,,n]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=Privacion)
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+E.rr.p1 <- esperanza(marginal.beta2)
+q.rr.p1 <- cuantiles(marginal.beta2)
+tabla1 <- data.frame("Periodo"=NA,"Causa"=NA,"Indice"=NA,"Genero"=NA,"media"=NA,"perc.2,5%"=NA, "perc.97,5%"=NA,"DIC"=NA)
+tabla1[1,1] <- "Periodo 1997-2015"
+tabla1[1,2] <- n
+tabla1[1,3] <- "Medea_2011"
+tabla1[1,4] <- "Hombres"
+tabla1[1,5] <- exp(E.rr.p1)
+tabla1[1,c(6,7)] <- exp(q.rr.p1)
+tabla1[1,8] <- resultado.p1$dic$dic
+tabla1
+
+# Bucle
+n=1
+
+for( n in  c(1,2,5,7,9,10,11,12,15,16,17,18,19,20,21)) {
+esp=data.frame(Esp=colSums(resultado$Exp[,1,,n]))
+obs=data.frame(Obs=colSums(resultado$Obs[,1,,n]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=Privacion)
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+E.rr.p1 <- esperanza(marginal.beta2)
+q.rr.p1 <- cuantiles(marginal.beta2)
+tabla2 <- data.frame("Periodo"=NA,"Causa"=NA,"Indice"=NA,"Genero"=NA,"media"=NA,"perc.2,5%"=NA, "perc.97,5%"=NA,"DIC"=NA)
+tabla2[1,1] <- "Periodo -2015"
+tabla2[1,2] <- n
+tabla2[1,3] <- "Medea_2011"
+tabla2[1,4] <- "Hombres"
+tabla2[1,5] <- exp(E.rr.p1)
+tabla2[1,c(6,7)] <- exp(q.rr.p1)
+tabla2[1,8] <- resultado.p1$dic$dic
+tabla1=rbind(tabla1,tabla2)
+}
+tabla1.h=tabla1
+library(knitr)
+kable(tabla1.h, caption="Tabla nº3.Tabla Resultados Hombres.Indicador Medea_2011",digits = 2)
+
+```
+
+
+
+Representamos ne la figura nº 28 los riesgos relativos para las causas : 
+"01","02","05","07","09", "10","11","12","15","16","17","18","19","20","21". (Ver Anexo)
+
+
+
+```{r echo=FALSE}
+tabla1.1=tabla1.h[2:16,c(2,5,6,7)]
+plot(c(1:15),c(tabla1.1[,2]), ylim=c(min(c(tabla1.1[,3])),max(c(tabla1.1[,4]))),ylab="RR e IC95%", xlab="Causa", xlim=c(1,15), axes=F)
+abline(h=1)
+segments(1, tabla1.1$perc.2.5.[1],1, tabla1.1$perc.97.5.[1])
+segments(2, tabla1.1$perc.2.5.[2],2, tabla1.1$perc.97.5.[2])
+segments(3, tabla1.1$perc.2.5.[3],3, tabla1.1$perc.97.5.[3])
+segments(4, tabla1.1$perc.2.5.[4],4, tabla1.1$perc.97.5.[4])
+segments(5, tabla1.1$perc.2.5.[5],5, tabla1.1$perc.97.5.[5])
+segments(6, tabla1.1$perc.2.5.[6],6, tabla1.1$perc.97.5.[6])
+segments(7, tabla1.1$perc.2.5.[7],7, tabla1.1$perc.97.5.[7])
+segments(8, tabla1.1$perc.2.5.[8],8, tabla1.1$perc.97.5.[8])
+segments(9, tabla1.1$perc.2.5.[9],9, tabla1.1$perc.97.5.[9])
+segments(10, tabla1.1$perc.2.5.[10],10, tabla1.1$perc.97.5.[10])
+segments(11, tabla1.1$perc.2.5.[11],11, tabla1.1$perc.97.5.[11])
+segments(12, tabla1.1$perc.2.5.[12],12, tabla1.1$perc.97.5.[12])
+segments(13, tabla1.1$perc.2.5.[13],13, tabla1.1$perc.97.5.[13])
+segments(14, tabla1.1$perc.2.5.[14],14, tabla1.1$perc.97.5.[14])
+segments(15, tabla1.1$perc.2.5.[15],15, tabla1.1$perc.97.5.[15])
+axis(2) 
+axis(1, at =c(1:15), labels = c("01","02","05","07","09","10","11","12","15","16","17","18","19","20","21"),cex.axis=1)
+abline(h=1, lty=2) 
+box()
+title(main="Figura nº 28. Riesgos Relativos para cada efermedad\n Santander-1997-2015-Hombres.Indice Medea", cex.sub=0.5, cex.main = 0.8 ,font.main= 1, col.main="black")
+
+```
+
+### Privación Multidimensional.
+
+
+
+```{r include=FALSE}
+esp=data.frame(Esp=colSums(resultado$Exp[,1,,22]))
+obs=data.frame(Obs=colSums(resultado$Obs[,1,,22]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+```
+
+
+
+
+```{r include=FALSE}
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=-indicador11$Indice)
+```
+
+Definimos la fórmula del modelo y ejecutamos la función "inla".
+
+```{r}
+sdunif       <- "expression:
+  logdens=log(0.5)-log_precision/2;
+  return(logdens);"
+formula2 <- O ~ f(
+  region.struct,
+  model = "bym",
+  graph = "Santander_nb.inla",
+  hyper = list(prec.unstruct = list(prior = sdunif), prec.spatial = list(prior = sdunif))) + Privacion
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+```
+
+```{r}
+sdunif       <- "expression:
+  logdens=log(0.5)-log_precision/2;
+  return(logdens);"
+A.orth  <-  rbind(
+  c(rep(0, 124), Datos$E),
+  c(rep(0, 124), Datos$Privacion * E)
+)
+
+formula2 <- O ~ Privacion + f(
+  region.struct,
+  model       = "bym",
+  graph       = "Santander_nb.inla",
+  hyper       = list(
+    prec.unstruct = list(prior = sdunif),
+    prec.spatial  = list(prior = sdunif)
+  ),
+  extraconstr = list(A = A.orth, e = rep(0, 2)),
+  rankdef     = 2,
+  constr      = FALSE
+)
+resultado.p1 <- inla(
+  formula           = formula2,
+  family            = "poisson",
+  data              = Datos,
+  E                 = E,
+  control.compute   = list(dic = TRUE, cpo = TRUE),
+  control.predictor = list(compute = TRUE, cdf = c(log(1))),
+  control.inla      = list(strategy = "laplace", int.strategy = "grid")
+)
+resultado.p1 <- inla(formula2, family="poisson", data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+```
+
+```{r echo=FALSE}
+summary(resultado.p1)
+# Las RMEs de cada área las obtenemos mediante la siguiente sintaxis:
+RMEs.p1 <- resultado.p1$summary.fitted.values$mean*100
+```
+
+
+
+```{r include=FALSE}
+# Creamos las funciones "RR", "esperanza" y "cuantiles" que nos permitir?n de ahora en adelante calcular la distribución a posteriori del RR, su media a posteriori e intervalo de credibilidad al 95%, respectivamente.
+
+
+#RR <- function(x){inla.marginal.transform(function(y) exp(y), x)}
+esperanza <- function(x){inla.emarginal(function(y) y, x)}
+cuantiles <- function(x){inla.qmarginal(c(0.025, 0.975), x)}
+# El RR asociado a la privación en el periodo lo obtenemos mediante la siguiente sintaxis:
+
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+
+
+# Calculamos la media a posteriori del RR:
+
+E.rr.p1 <- esperanza(marginal.beta2)
+
+# Calculamos el intervalo de credibilidad al 95%:
+
+q.rr.p1 <- cuantiles(marginal.beta2)
+
+```
+
+Representamos gráficamente la función de densidad de la distribución a posteriori del Riesgo Relativo (RR) (Figura nº 29). 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Graficamos la distribución a posteriori del RR#
+post.RR.p1 <- inla.smarginal(marginal.beta2)
+summary(post.RR.p1)
+plot(post.RR.p1,lty=1,main="",type="l",ylab="Densidad",xlab="Riesgo Relativo",lwd=2,xlim=c(min(post.RR.p1$x),max(post.RR.p1$x)),ylim=c(min(post.RR.p1$y),max(post.RR.p1$y)))
+title(main="Figura nº 29: distribución a posteriori del RR\n Santander - total.privación Multidimensional.Hombres",cex.sub=0.5, cex.main = 0.8 ,font.main= 1, col.main= "black")
+
+```
+
+En la tabla nº2, recogemos los resultados obtenidos.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Creamos el objeto "tabla1" para guardar los RR y su intervalo de credibilidad al 95%, según la privación, para cada periodo:
+
+n=22
+esp=data.frame(Esp=colSums(resultado$Exp[,1,,n]))
+obs=data.frame(Obs=colSums(resultado$Obs[,1,,n]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=-indicador11$Indice)
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+E.rr.p1 <- esperanza(marginal.beta2)
+q.rr.p1 <- cuantiles(marginal.beta2)
+tabla3 <- data.frame("Periodo"=NA,"Causa"=NA,"Indice"=NA,"Genero"=NA,"media"=NA,"perc.2,5%"=NA, "perc.97,5%"=NA,"DIC"=NA)
+tabla3[1,1] <- "Periodo 1997-2015"
+tabla3[1,2] <- n
+tabla3[1,3] <- "ICANE_2011"
+tabla3[1,4] <- "Hombres"
+tabla3[1,5] <- exp(E.rr.p1)
+tabla3[1,c(6,7)] <- exp(q.rr.p1)
+tabla3[1,8] <- resultado.p1$dic$dic
+tabla3
+
+# Bucle
+n=1
+
+for( n in c(1,2,5,7,9,10,11,12,15,16,17,18,19,20,21)) {
+esp=data.frame(Esp=colSums(resultado$Exp[,1,,n]))
+obs=data.frame(Obs=colSums(resultado$Obs[,1,,n]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=-indicador11$Indice)
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+E.rr.p1 <- esperanza(marginal.beta2)
+q.rr.p1 <- cuantiles(marginal.beta2)
+tabla4 <- data.frame("Periodo"=NA,"Causa"=NA,"Indice"=NA,"Genero"=NA,"media"=NA,"perc.2,5%"=NA, "perc.97,5%"=NA,"DIC"=NA)
+tabla4[1,1] <- "Periodo 1997-2015"
+tabla4[1,2] <- n
+tabla4[1,3] <- "Multidimensional_2011"
+tabla4[1,4] <- "Hombres"
+tabla4[1,5] <- exp(E.rr.p1)
+tabla4[1,c(6,7)] <- exp(q.rr.p1)
+tabla4[1,8] <- resultado.p1$dic$dic
+tabla3=rbind(tabla3,tabla4)
+}
+tabla1.h=rbind(tabla1,tabla3)
+kable(tabla3, caption="Tabla nº2.Tabla Resultados Hombres.Indicador Multidimensional",digits = 2)
+
+```
+
+Representamos en la figura nº 30 los riesgos relativos para las causas : "01","02","05","07","09", "10","11","12","15","16","17","18","19","20","21". (Ver Anexo)
+
+
+
+```{r echo=FALSE}
+tabla1.1=tabla3[2:16,c(2,5,6,7)]
+plot(c(1:15),c(tabla1.1[,2]), ylim=c(min(c(tabla1.1[,3])),max(c(tabla1.1[,4]))),ylab="RR e IC95%", xlab="Causa", xlim=c(1,15), axes=F)
+abline(h=1)
+segments(1, tabla1.1$perc.2.5.[1],1, tabla1.1$perc.97.5.[1])
+segments(2, tabla1.1$perc.2.5.[2],2, tabla1.1$perc.97.5.[2])
+segments(3, tabla1.1$perc.2.5.[3],3, tabla1.1$perc.97.5.[3])
+segments(4, tabla1.1$perc.2.5.[4],4, tabla1.1$perc.97.5.[4])
+segments(5, tabla1.1$perc.2.5.[5],5, tabla1.1$perc.97.5.[5])
+segments(6, tabla1.1$perc.2.5.[6],6, tabla1.1$perc.97.5.[6])
+segments(7, tabla1.1$perc.2.5.[7],7, tabla1.1$perc.97.5.[7])
+segments(8, tabla1.1$perc.2.5.[8],8, tabla1.1$perc.97.5.[8])
+segments(9, tabla1.1$perc.2.5.[9],9, tabla1.1$perc.97.5.[9])
+segments(10, tabla1.1$perc.2.5.[10],10, tabla1.1$perc.97.5.[10])
+segments(11, tabla1.1$perc.2.5.[11],11, tabla1.1$perc.97.5.[11])
+segments(12, tabla1.1$perc.2.5.[12],12, tabla1.1$perc.97.5.[12])
+segments(13, tabla1.1$perc.2.5.[13],13, tabla1.1$perc.97.5.[13])
+segments(14, tabla1.1$perc.2.5.[14],14, tabla1.1$perc.97.5.[14])
+segments(15, tabla1.1$perc.2.5.[15],15, tabla1.1$perc.97.5.[15])
+axis(2) 
+axis(1, at =c(1:15), labels = c("01","02","05","07","09", "10","11","12","15","16","17","18","19","20","21"),cex.axis=1)
+abline(h=1, lty=2) 
+box()
+title(main="figura nº 30. Riesgos Relativos para cada efermedad\n Santander-1997-2015-Hombres.Indice Multidimensional", cex.sub=0.5, cex.main = 0.8 ,font.main= 1, col.main="black")
+
+```
+### Resultados Mujeres
+
+#### privación Medea
+
+
+
+```{r include=FALSE}
+esp=data.frame(Esp=colSums(resultado$Exp[,2,,22]))
+obs=data.frame(Obs=colSums(resultado$Obs[,2,,22]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+```
+
+
+```{r include=FALSE}
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=Privacion)
+```
+
+Definimos la fórmula del modelo y ejecutamos la función "inla".
+
+```{r}
+sdunif       <- "expression:
+  logdens=log(0.5)-log_precision/2;
+  return(logdens);"
+formula2 <- O ~ f(
+  region.struct,
+  model = "bym",
+  graph = "Santander_nb.inla",
+  hyper = list(prec.unstruct = list(prior = sdunif), prec.spatial = list(prior = sdunif))) + Privacion
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+```
+
+
+
+```{r include=FALSE}
+summary(resultado.p1)
+# Las RMEs de cada área las obtenemos mediante la siguiente sintaxis:
+RMEs.p1 <- resultado.p1$summary.fitted.values$mean*100
+summary(RMEs.p1)
+```
+
+
+
+
+```{r include=FALSE}
+# Creamos las funciones "RR", "esperanza" y "cuantiles" que nos permitirán de ahora en adelante calcular la distribución a posteriori del RR, su media a posteriori e intervalo de credibilidad al 95%, respectivamente.
+
+#RR <- function(x){inla.marginal.transform(function(y) exp(y), x)}
+esperanza <- function(x){inla.emarginal(function(y) y, x)}
+cuantiles <- function(x){inla.qmarginal(c(0.025, 0.975), x)}
+# El RR asociado a la privación en el periodo lo obtenemos mediante la siguiente sintaxis:
+
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+
+
+# Calculamos la media a posteriori del RR:
+
+E.rr.p1 <- esperanza(marginal.beta2)
+
+# Calculamos el intervalo de credibilidad al 95%:
+
+q.rr.p1 <- cuantiles(marginal.beta2)
+
+```
+
+Representamos gráficamente la función de densidad de la distribución a posteriori del Riesgo Relativo (RR) (Figura 31). 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Graficamos la distribución a posteriori del RR#
+post.RR.p1 <- inla.smarginal(marginal.beta2)
+summary(post.RR.p1)
+plot(post.RR.p1,lty=1,main="",type="l",ylab="Densidad",xlab="Riesgo Relativo",lwd=2,xlim=c(min(post.RR.p1$x),max(post.RR.p1$x)),ylim=c(min(post.RR.p1$y),max(post.RR.p1$y)))
+title(main="Figura nº 31. distribución a posteriori del RR\n Santander - total.privación Medea.Mujeres",cex.sub=0.5, cex.main = 0.8 ,font.main= 1, col.main= "black")
+
+```
+
+Los resultados finales se han recogido en la Tabla nº 3.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Creamos el objeto "tabla1" para guardar los RR y su intervalo de credibilidad al 95%, según la privación, para cada periodo:
+
+n=22
+esp=data.frame(Esp=colSums(resultado$Exp[,2,,n]))
+obs=data.frame(Obs=colSums(resultado$Obs[,2,,n]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=Privacion)
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+E.rr.p1 <- esperanza(marginal.beta2)
+q.rr.p1 <- cuantiles(marginal.beta2)
+tabla1 <- data.frame("Periodo"=NA,"Causa"=NA,"Indice"=NA,"Genero"=NA,"media"=NA,"perc.2,5%"=NA, "perc.97,5%"=NA,"DIC"=NA)
+tabla1[1,1] <- "Periodo 1997-2015"
+tabla1[1,2] <- n
+tabla1[1,3] <- "Medea_2011"
+tabla1[1,4] <- "Mujeres"
+tabla1[1,5] <- exp(E.rr.p1)
+tabla1[1,c(6,7)] <- exp(q.rr.p1)
+tabla1[1,8] <- resultado.p1$dic$dic
+tabla1
+
+# Bucle
+n=1
+
+for( n in c(2,5,7,8,11,12,15,16,17,18,19)) {
+esp=data.frame(Esp=colSums(resultado$Exp[,2,,n]))
+obs=data.frame(Obs=colSums(resultado$Obs[,2,,n]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=Privacion)
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+E.rr.p1 <- esperanza(marginal.beta2)
+q.rr.p1 <- cuantiles(marginal.beta2)
+tabla2 <- data.frame("Periodo"=NA,"Causa"=NA,"Indice"=NA,"Genero"=NA,"media"=NA,"perc.2,5%"=NA, "perc.97,5%"=NA,"DIC"=NA)
+tabla2[1,1] <- "Periodo 1997-2015"
+tabla2[1,2] <- n
+tabla2[1,3] <- "Medea_2011"
+tabla2[1,4] <- "Mujeres"
+tabla2[1,5] <- exp(E.rr.p1)
+tabla2[1,c(6,7)] <- exp(q.rr.p1)
+tabla2[1,8] <- resultado.p1$dic$dic
+tabla1=rbind(tabla1,tabla2)
+}
+tabla1.m=tabla1
+
+kable(tabla1.m, caption="Tabla nº3.Tabla Resultados Mujeres.Indicador Medea 2011",digits = 2)
+
+```
+
+Representamos en la figura nº 32 los riesgos relativos de las causas : "02","05","07","11","12","15","16","17","18","19". (Ver Anexo II)
+
+
+```{r echo=FALSE}
+tabla1.1=tabla1.m[2:12,c(2,5,6,7)]
+plot(c(1:11),c(tabla1.1[,2]), ylim=c(min(c(tabla1.1[,3])),max(c(tabla1.1[,4]))),ylab="RR e IC95%", xlab="Causa", xlim=c(1,11), axes=F)
+abline(h=1)
+segments(1, tabla1.1$perc.2.5.[1],1, tabla1.1$perc.97.5.[1])
+segments(2, tabla1.1$perc.2.5.[2],2, tabla1.1$perc.97.5.[2])
+segments(3, tabla1.1$perc.2.5.[3],3, tabla1.1$perc.97.5.[3])
+segments(4, tabla1.1$perc.2.5.[4],4, tabla1.1$perc.97.5.[4])
+segments(5, tabla1.1$perc.2.5.[5],5, tabla1.1$perc.97.5.[5])
+segments(6, tabla1.1$perc.2.5.[6],6, tabla1.1$perc.97.5.[6])
+segments(7, tabla1.1$perc.2.5.[7],7, tabla1.1$perc.97.5.[7])
+segments(8, tabla1.1$perc.2.5.[8],8, tabla1.1$perc.97.5.[8])
+segments(9, tabla1.1$perc.2.5.[9],9, tabla1.1$perc.97.5.[9])
+segments(10, tabla1.1$perc.2.5.[10],10, tabla1.1$perc.97.5.[10])
+segments(11, tabla1.1$perc.2.5.[11],11, tabla1.1$perc.97.5.[11])
+axis(2) 
+axis(1, at =c(1:11), labels = c("02","05","07","08","11","12","15","16","17","18","19"),cex.axis=1)
+abline(h=1, lty=2) 
+box()
+title(main="Figura nº 32 .Riesgos Relativos para cada efermedad\n Santander-1997-2015-Mujeres.Indice Medea", cex.sub=0.5, cex.main = 0.8 ,font.main= 1, col.main="black")
+
+```
+
+
+####  privación Multidimensional. Censo de 2011
+
+```{r include=FALSE}
+esp=data.frame(Esp=colSums(resultado$Exp[,2,,22]))
+obs=data.frame(Obs=colSums(resultado$Obs[,2,,22]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+```
+
+
+
+```{r include=FALSE}
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=-indicador11$Indice)
+```
+
+Definimos la fórmula del modelo y ejecutamos la función "inla".
+
+```{r}
+sdunif       <- "expression:
+  logdens=log(0.5)-log_precision/2;
+  return(logdens);"
+formula2 <- O ~ f(
+  region.struct,
+  model = "bym",
+  graph = "Santander_nb.inla",
+  hyper = list(prec.unstruct = list(prior = sdunif), prec.spatial = list(prior = sdunif))) + Privacion
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+```
+
+
+
+```{r echo=FALSE}
+summary(resultado.p1)
+# Las RMEs de cadaárea las obtenemos mediante la siguiente sintaxis:
+RMEs.p1 <- resultado.p1$summary.fitted.values$mean*100
+summary(RMEs.p1)
+```
+
+
+
+
+```{r}
+# Creamos las funciones "RR", "esperanza" y "cuantiles" que nos permitirán de ahora en adelante calcular la distribución a posteriori del RR, su media a posteriori e intervalo de credibilidad al 95%, respectivamente.
+
+
+#RR <- function(x){inla.marginal.transform(function(y) exp(y), x)}
+esperanza <- function(x){inla.emarginal(function(y) y, x)}
+cuantiles <- function(x){inla.qmarginal(c(0.025, 0.975), x)}
+# El RR asociado a la privación en el periodo lo obtenemos mediante la siguiente sintaxis:
+
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+
+
+# Calculamos la media a posteriori del RR:
+
+E.rr.p1 <- esperanza(marginal.beta2)
+
+# Calculamos el intervalo de credibilidad al 95%:
+
+q.rr.p1 <- cuantiles(marginal.beta2)
+
+```
+
+Representamos gráficamente la función de densidad de la distribución a posteriori del Riesgo Relativo (RR) (Figura nº 33). 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Graficamos la distribución a posteriori del RR#
+post.RR.p1 <- inla.smarginal(marginal.beta2)
+summary(post.RR.p1)
+plot(post.RR.p1,lty=1,main="",type="l",ylab="Densidad",xlab="Riesgo Relativo",lwd=2,xlim=c(min(post.RR.p1$x),max(post.RR.p1$x)),ylim=c(min(post.RR.p1$y),max(post.RR.p1$y)))
+title(main="Figura nº 33. distribución a posteriori del RR\n Santander - total.privación Multidimensional.Mujeres",cex.sub=0.5, cex.main = 0.8 ,font.main= 1, col.main= "black")
+
+```
+
+Los resultados finales están en la tabla nº 4
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Creamos el objeto "tabla1" para guardar los RR y su intervalo de credibilidad al 95%, según la privación, para cada periodo:
+
+n=22
+esp=data.frame(Esp=colSums(resultado$Exp[,2,,n]))
+obs=data.frame(Obs=colSums(resultado$Obs[,2,,n]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=-indicador11$Indice)
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+E.rr.p1 <- esperanza(marginal.beta2)
+q.rr.p1 <- cuantiles(marginal.beta2)
+tabla3 <- data.frame("Periodo"=NA,"Causa"=NA,"Indice"=NA,"Genero"=NA,"media"=NA,"perc.2,5%"=NA, "perc.97,5%"=NA,"DIC"=NA)
+tabla3[1,1] <- "Periodo 1997-2015"
+tabla3[1,2] <- n
+tabla3[1,3] <- "Multidimensional_2011"
+tabla3[1,4] <- "Mujeres"
+tabla3[1,5] <- exp(E.rr.p1)
+tabla3[1,c(6,7)] <- exp(q.rr.p1)
+tabla3[1,8] <- resultado.p1$dic$dic
+tabla3
+
+# Bucle
+n=1
+
+for( n in c(2,5,7,8,11,12,15,16,17,18,19)) {
+esp=data.frame(Esp=colSums(resultado$Exp[,2,,n]))
+obs=data.frame(Obs=colSums(resultado$Obs[,2,,n]))
+O=c(obs$Obs)
+E=c(esp$Esp)
+Privacion=resultado$privacion$privacion_2011
+Datos <- data.frame(region=region, region.struct=region, O=O, E=E, Privacion=-indicador11$Indice)
+resultado.p1 <- inla(formula2, family="poisson",data=Datos, E=E,
+control.compute=list(dic=T, cpo=TRUE),
+control.predictor=list(compute=TRUE, cdf=c(log(1))),
+control.inla=list(strategy="laplace", int.strategy="grid"))
+marginal.beta2 <- resultado.p1$marginals.fixed$Privacion
+E.rr.p1 <- esperanza(marginal.beta2)
+q.rr.p1 <- cuantiles(marginal.beta2)
+tabla4 <- data.frame("Periodo"=NA,"Causa"=NA,"Indice"=NA,"Genero"=NA,"media"=NA,"perc.2,5%"=NA, "perc.97,5%"=NA,"DIC"=NA)
+tabla4[1,1] <- "Periodo 1997-2015"
+tabla4[1,2] <- n
+tabla4[1,3] <- "ICANE_2011"
+tabla4[1,4] <- "Mujeres"
+tabla4[1,5] <- exp(E.rr.p1)
+tabla4[1,c(6,7)] <- exp(q.rr.p1)
+tabla4[1,8] <- resultado.p1$dic$dic
+tabla3=rbind(tabla3,tabla4)
+}
+tabla1.m=rbind(tabla1,tabla3)
+kable(tabla3, caption="Tabla nº4.Tabla Resultados Mujeres.Indicador Multidimensional",digits = 2)
+
+```
+
+Representamos en la figura nº 32 los riesgos relativos de las causas : "02","05","07","08","11","12","15","16","17","18","19" (Ver Anexo II)
+
+
+```{r echo=FALSE}
+tabla1.1=tabla3[2:12,c(2,5,6,7)]
+plot(c(1:11),c(tabla1.1[,2]), ylim=c(min(c(tabla1.1[,3])),max(c(tabla1.1[,4]))),ylab="RR e IC95%", xlab="Causa", xlim=c(1,11), axes=F)
+abline(h=1)
+segments(1, tabla1.1$perc.2.5.[1],1, tabla1.1$perc.97.5.[1])
+segments(2, tabla1.1$perc.2.5.[2],2, tabla1.1$perc.97.5.[2])
+segments(3, tabla1.1$perc.2.5.[3],3, tabla1.1$perc.97.5.[3])
+segments(4, tabla1.1$perc.2.5.[4],4, tabla1.1$perc.97.5.[4])
+segments(5, tabla1.1$perc.2.5.[5],5, tabla1.1$perc.97.5.[5])
+segments(6, tabla1.1$perc.2.5.[6],6, tabla1.1$perc.97.5.[6])
+segments(7, tabla1.1$perc.2.5.[7],7, tabla1.1$perc.97.5.[7])
+segments(8, tabla1.1$perc.2.5.[8],8, tabla1.1$perc.97.5.[8])
+segments(9, tabla1.1$perc.2.5.[9],9, tabla1.1$perc.97.5.[9])
+segments(10, tabla1.1$perc.2.5.[10],10, tabla1.1$perc.97.5.[10])
+segments(11, tabla1.1$perc.2.5.[11],11, tabla1.1$perc.97.5.[11])
+axis(2) 
+axis(1, at =c(1:11), labels = c("02","05","07","08","11","12","15","16","17","18","19"),cex.axis=1)
+abline(h=1, lty=2) 
+box()
+title(main="Figura nº 34 .Riesgos Relativos para cada efermedad\n Santander-1997-2015-Mujeres.Indice Multidimensional", cex.sub=0.5, cex.main = 0.8 ,font.main= 1, col.main="black")
+
+```
+
+
+
+
+
+# Conclusiones
+
+Las RME's de todas las causas de mortalidad del municipio de santander elaboradas con datos del periodo 1997-2015 sugieren la exisitencia de una realción entre pobreza y exceso de mortalidad, ya que una serie de secciones censales que incluyen las zonas más desfavorecidas (Barrio Pesquero, Monte y Cueto, La albericia) obtienen valores altos en las RME's.
+
+Con el objetivo de contrastar con la teoría estadística dicha relación se ha utilizado el indicador Medea III y otro Multidimensional que además de la dimensión socioeconómica del indicador Medea, incluye las dimensiones de vulnerabilidad demográfica, de vivienda y de pobreza monetaria. Este indicador al igual que el Medea se elabora con datos del censo de 2001 y 2011, pero incluye datos procedentes de otros registros públicos (pensiones no contributivas y rentas básicas). Las representaciones geográficas de este indicador (Multidimensional 2011) muestran la vulnerabilidad de las secciones en donde se encuadra el Barrio Pesquero, determinadas secciones del centro de la ciudad, y de otras areas de Monte y La albericia.
+
+La regresión ecológica realizada con el modelo INLA bayesiano BYM, confirma esta relación estre exceso de mortalidad y pobreza en la ciudad de Santander:
+
+\	|Privación |	0.25 quant	| 0.975 quant|
+--------------------|---------|----------|---------|	
+Hombres. Medea III	| 0.2963|	0.1876|	0.4049|
+Hombres. Multidimensional 2011	| 0.0861|	0.0619|	0.1109|
+Mujeres. Medea III	| 0.0963|	-0.0171|	0.2109|
+Mujeres. Multidimensional 2011	| 0.0320|	0.036|	0.0606|
+
+Exceptuando el grupo de mujeres cuando se utiliza el indicador Medea III, en los otros análisis se confirma que pobreza y riesgo relativo de mortalidad tienen una relación positiva y con significación individual a un $\alpha=0.05$.
+
+Las regresiones también muestra que esta relación es más eleva en los grupos de hombres que en los grupos de Mujeres. En relación a las enfermedades más habituales entre hombres y mujeres, destacarían la relación entre vulnerabilidad y las causas 01, 06, 18 y 19 que se obtienen en el grupo de los hombres.
+
+
+# ANEXO I
+
+Para analizar la mortalidad en cada area se ha escogido como indicador la Razón de Mortalidad Estandarizada suavizada (RMEs), calculada con un modelo específico de suavización de riesgos, tal y como se le denomina en la literatura científica. La mayoría de modelos de suavización de riesgos modelizan la dependencia espacial entre observaciones, asumiendo que observaciones de unidades geográficas próximas entre sí se parecerán más que las observaciones de unidades geográficas más distantes. La inclusión en el modelo de esta estructura de dependencia espacial entre los riesgos municipales aporta información adicional a la que aportan los datos de todos éstos, y conduce a una estimación más fiable de los indicadores de riesgo. La fundamentación de esta idea sería que los factores de riesgo que favorecen la mortalidad están relacionados con el entorno (social, cultural, medioambiental) y que éstos no cambian bruscamente de un municipio al contiguo, sino que varían de forma espacialmente suave. Por ello, se espera que municipios cercanos presenten riesgos similares, y así la RME de un municipio se suaviza (estima) con la ayuda de sus municipios vecinos. El modelo estadístico escogido para la estimación de las RMEs, y que implementa las ideas anteriores, es el modelo (Bayesiano) de Besag, York y Mollié (1991), que es una de las propuestas más populares en la literatura de suavización geográfica de riesgos.
+
+Tal y como suele ser habitual en este tipo de modelos, se parte de la suposición de que el número de muertes observadas, $O_i$, en cada area $i$ sigue una distribución de Poisson. El valor medio de esta distribución se modeliza en función del número de casos esperados en ese area ,$E_i$, y el riesgo subyacente en el mismo $R_i$, que, una vez multiplicado por 100, constituye la RMEs que deseamos estimar. Por tanto, el modelo empleado asume:
+
+$$O_i|R_i \sim Po(E_iR_i)$$
+donde el índice $i$ varía para el conjunto de areas (secciones) de Santander. Por su parte, el conjunto de riesgos Ri se modeliza de la siguiente manera:
+
+$$log(R_i)=\mu + \alpha_i + \beta_i$$,
+es decir, los log-riesgos son suma de:
+
+Un intercept $\mu$ común a todas las areas.
+
+Un efecto aleatorio espacial
+
+$$\alpha_i|\alpha_{−i},\sigma  \sim N(\bar \alpha_i,\frac {\sigma^2}{n_i})$$
+que hace que el riesgo en cada área se parezca al de sus áreas vecinas. En la expresión anterior $\sigma_i$ se refiere al conjunto de componentes del vector $\alpha$ excluyendo su i-ésima componente y $\bar \alpha_i$ se refiere a la media de dicho vector sobre el conjunto de vecinos de la i-ésima área. Por último, $n_i$ denota el número de vecinos de la i-ésima área.
+
+Un efecto aleatorio heterogéneo, independiente para cada área:
+$$\beta_i|\tau \sim N(0,\tau^2)$$,
+que permite que cualquier área presente un comportamiento distinto al de sus vecinos, si así se requiriera.
+
+Por último, el carácter Bayesiano del modelo propuesto hace necesario que se le den distribuciones iniciales al resto de parámetros que deseemos estimar. Dichas distribuciones iniciales serían las siguientes:
+
+$$\tau \sim Unif(0,100)$$,
+$$\sigma \sim Unif(0,100)$$,
+$$\mu \sim Unif(−\infty,\infty)$$.
+
+Una vez estimada la distribución a posteriori de las RMEs a partir del modelo que acabamos de describir, calculamos para cada area su media a posteriori y la masa de dicha distribución por encima de 100. 
+
+
+# ANEXO II
+
+La información de la mortalidad se obtendrá del registro de mortalidad que se nutre del Boletín Estadístico de Defunción (BED) y del Boletín Estadístico de Parto (BEP) para las defunciones ocurridas durante las primeras 24 horas de vida.
+
+Ambos ficheros proceden de los registros civiles, y base a un convenio entre el Instituto Nacional de Estadística y el Gobierno de Cantabria, los servicios de Salud Pública de Cantabria codifican la causa de muerte. 
+
+Una de la tareas de proyecto MEDEA III ha sido la de georeferenciar las direcciones del fichero de defunciones del INE una vez codificadas las causas de muerte, para ello se ha elaborado un protocolo de georeferenciación.
+
+Las herramientas de geocodificación utilizadas en el protocolo son libres y por tanto podían ser usadas por todos los grupos de investigacion. Además, estas herramientas pueden ser usadas tanto a través de la web como desde el software estadístico *R*, que automatiza el proceso de llamada a los servicios web que llevan a cabo la geocodificación: Cartociudad y Google. 
+
+En Cantabria se ha elaborado un protocolo propio para georeferenciación estas direcciones, basado en:
+
+1 Lectura de un fichero masivo con direcciones postales donde, en caso de ser necesario, se lleva a cabo un tratamiento de mejora de la calidad de las direcciones previo a la geocodificación. Es importante destacar que los tratamientos son mínimos porque el geocodificador espera datos correctamente normalizados y procesados por otros componentes desarrollados también en el ICANE.
+
+2.Geocodificación masiva de las direcciones de forma paralela con cada uno de los proveedores externos de geocodificación seleccionados; en este caso: Google, Cartociudad (versiones antigua y nueva), Bing, Mapbox y Google Places.
+
+3.Elección de la mejor coordenada de entre todos los proveedores utilizando algoritmos de agrupación o clustering (DBSCAN) y siguiendo un criterio de cercanía al centroide del clúster formado por los proveedores o de selección basado en la mejor correlación de las coordenadas devueltas por un  proveedor con las del resto (en caso de no existir suficientes proveedores en el clúster). Para ello se tiene en cuenta si los proveedores son seleccionables como mejor coordenada en términos de licencia.
+
+4.Generación de estadísticas básicas sobre los datos geocodificados para facilitar un posterior análisis.
+
+El análisis se realiza según los “grandes grupos de causas” consensuada por los distintos grupos del proyecto MEDEA. Se presentan a continuación los grandes grupos y la lista de causas específicas de defunción (opcionales o no), con sus equivalencias de códigos CIE-9 y CIE-10.
+
+
+<center>![](CAUSAS.PNG)</center>
+
+La tabulación de este fichero por grupos quinquenales de edad, grandes causas y secciones censales, da lugar al fichero de datos observados.
+
+
+En segundo lugar se tabula en el padrón municipal de Santander la población del periodo para cada grupo de edad y sección censal, para calculamos las tasas específicas por edad de la ciudad dividiendo los muertos de cierta causa en cada grupo de edad por la población en el grupo de edad.
+
+
+Para calcular los esperados por estandarización indirecta debemos multiplicar la población de cada sección censal por edad por las tasas de referencia en ese grupo de edad. Esto equivale a multiplicar la matriz de poblaciones, que contiene tantas filas como secciones censales y tantas columnas como grupos de edad por la matriz de tasas calculada en el apartado anterior.
+
+
+
+
+# Bibliografía
+
+Eurostat. Revision of the European Standard Population Report of Eurostat's task force. Luxembourg: Publications Office of the European Union; 2013.
+
+Besag, J; York, M; Mollié, A. Bayesian Image Restoration, with Two Applications in Spatial Statistics. Annals of the Institute of Statistical Mathematics, 1991, 43, 1-20.
+
+Dominguez-Berjón et all, 2008 : Construcción de un índice de privación a partir de datos censales en grandes ciudades españolas (Proyecto MEDEA).Gac Sanit vol.22 no.3 Barcelona may./jun. 2008 
+
+Martínez-Beneito, M A; López-Quílez A; Botella-Rocamora P. An autoregressive approach to spatio-temporal disease mapping. Statistics in Medicine, 2008, 27, 2874-2889.
+
+# Anexo
+
+
+HOMBRES
+1	SIDA
+2	C. ESTÓMAGO
+5	C. COLORRECTAL
+7	C. PULMÓN
+9	C. PRÓSTATA
+10	C. VEJIGA
+11	C. HEMATOLÓGICO
+12	DIABETES
+15	DEMENCIA
+16	CARDIOPATIA ISQUÉMICA
+17	ICTUS
+18	EPOC
+19	CIRROSIS 
+20	SUICIDIO
+21	ACCIDENTES TRÁFICO
+ c(1,2,5,7,9,10,11,12,15,16,17,18,19,20,21)
+MUJERES
+2	C. ESTÓMAGO
+5	C. COLORRECTAL
+7	C. PULMÓN
+8	C. MAMA
+11	C. HEMATOLÓGICO
+12	DIABETES
+15	DEMENCIA
+16	CARDIOPATIA ISQUÉMICA
+17	ICTUS
+18	EPOC
+19	CIRROSIS 
+
+c(2,5,7,8,11,12,15,16,17,18,19))

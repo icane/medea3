@@ -1,0 +1,742 @@
+---
+title: "indice multidimensional"
+author: "Francisco Parra"
+date: "30/6/2021"
+output:
+  word_document: default
+  html_document: default
+---
+
+# Instalación y carga de librerías, base de datos y Cartografía.
+
+## Instalación y carga de librerías
+
+
+Para poder realizar los modelos de suavización, concretamente el modelo de Besag,York y Molli (modelo BYM), utilizaremos la librería de R "INLA" que debe instalarse mediante la sintaxis:
+source("http://www.math.ntnu.no/inla/givemeINLA.R"). Una breve descripción de esta función se puede consultar en el Anexo I.
+
+Debido a que la librería INLA está en continuo desarrollo, se recomienda actualizarla cada vez que ejecutemos la sintaxis. La instrucción para actualizarla es la siguiente: inla.upgrade(testing=TRUE)
+
+```{r carga_librerias_analisis_estadistico}
+#install.packages(c("pixmap", "mvtnorm", "numDeriv", "fields","R.utils,"maptools", "spdep", "RColorBrewer", "Hmisc", "gplots")
+#install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
+library(maptools)
+library(spdep)
+library(RColorBrewer)
+library(Hmisc)
+library(gplots)
+library(DT)
+```
+
+## Lectura de los datos y la cartografía
+
+En el siguiente paso abriremos los objetos de R que contienen los valores observados,los valores esperados. El metodo seguido para obtener los valores observados y esperados, se describe en el Anexo II.
+
+
+```{r include=FALSE}
+#load("~/ICANE/medea/Medea III/santander.RData")
+library(medear)
+load("santander.RData")
+resultado=medear::procesa_datos(santander)
+str(resultado$Obs)
+str(resultado$Exp)
+#resultado$Exp[1:16,1,1,1]
+#resultado$Exp[1,,1,1]
+#resultado$Exp[1,1,1,]
+```
+
+
+
+Además se importará la cartografía necesaria para calcular la matriz de vecindades y representar gráficamente los mapas.
+
+
+
+Leeremos la cartografía y la asignaremos al objeto Carto mediante la siguiente sintaxis:
+```{r}
+Carto<-rgdal::readOGR("cartografia_santander.shp")
+```
+
+
+Dibujamos la cartografía con sus ejes de coordenadas mediante el siguiente comando:
+```{r mapas}
+plot(Carto, axes=T)
+
+```
+
+# Indicador de privación Multidimensional de Cantabria
+
+## Indice de privacion MEDEA
+
+Las etapas seguidas en la construcción del indicador de privación MEDEA (http://scielo.isciii.es/scielo.php?script=sci_arttext&pid=S0213-91112008000300002) fueron las siguientes:
+
+1. Identificación de los indicadores disponibles, asignándolos en nuestro marco conceptual a la dimensión correspondiente. Se valoraron inicialmente las variables censales que podían considerarse candidatas a detectar diferencias socioeconómicas y de privación en el sentido expuesto en la introducción, intentando proporcionar validez de contenido al futuro índice.
+
+2. Estudio de las correlaciones entre los indicadores socioeconómicos.
+
+3. Análisis de las correlaciones entre los indicadores contemplados inicialmente para su posible inclusión en el índice y el análisis dimensional de éstos. Se usó el análisis de componentes principales, con la extracción de distintas componentes, para identificar las variables que podrían combinarse en un índice, estableciendo la estructura de correlaciones entre ellas. La interpretación de los factores se llevó a cabo sobre la solución rotada ortogonalmente según el método varimax.
+
+4. Agregación de los indicadores seleccionados en el primer componente del análisis anterior mediante la extracción de un único eje por componentes principales. 
+
+La construcción del índice de privación resulta de la combinación de los siguientes indicadores:
+
+(1) Porcentaje de población en paro.
+
+(2) Porcentaje de asalariados eventuales.
+
+(3) Porcentaje de trabajadores manuales
+
+(4) Porcentaje de población con instrucción insuficiente. 
+
+(5) Porcentaje de población juvenil con instrucción insuficiente, 
+
+usando como valores de peso los de las saturaciones obtenidas en esta extracción.
+
+## Atlas de la Vulnerabilidad Urbana en España 2001 y 2011
+
+El Atlas de la Vulnerabilidad Urbana en España 2001 y 2011 (Ministerio de Fomento,2015) es una aplicación web que ofrece información estadística a nivel de sección censal y en todos los municipios de España acerca de diversas variables referidas a la vulnerabilidad urbana, generando mapas temáticos de diferentes indicadores. El Atlas se ha realizado a partir de los datos de los Censos de Población y Vivienda del Instituto Nacional de Estadística (INE) de los años 2001 y 2011.
+
+En el atlas se presentan 57 mapas temáticos, correspondientes a 24 Indicadores de Vulnerabilidad Urbana y a 33 variables estadísticas complementarias. Los Indicadores de Vulnerabilidad son datos relativos, expresados mediante porcentajes, y se representan con mapas de coropletas. Las variables estadísticas ofrecen valores absolutos (población, viviendas, etc.), y se representan mediante símbolos que pueden superponerse a las coropletas.
+
+
+Los mapas de los indicadores de vulnerabilidad urbana se organizan en 4 temas: 
+
+
+Vulnerabilidad Sociodemográfica (5 indicadores y 8 variables), 
+
+Vulnerabilidad Socioeconómica (6 indicadores y 10 variables),
+
+Vulnerabilidad Residencial (8 indicadores y 9 variables) y 
+
+Vulnerabilidad Subjetiva (5 indicadores y 6 variables, que sólo están disponibles para el Censo de 2001). 
+
+
+De los 24 Indicadores, se consideran Indicadores Básicos de Vulnerabilidad Urbana (IBVU) los siguientes:
+
+Porcentaje de población en paro y Porcentaje de población sin estudios, que son comunes para 2001 y 2011 y Porcentaje de población en viviendas sin servicio o aseo, como indicador de las carencias en las viviendas en 2001, sustituido por el Porcentaje de viviendas en edificios en estado de conservación ruinoso,malo o deficiente para la fecha de referencia de 2011.
+
+Los Indicadores Básicos de Vulnerabilidad Urbana (IBVU) que se han empleado en el Análisis Urbanístico de Barrios Vulnerables en España para la identificación de barrios vulnerables. Estos barrios se identifican cuando estos indicadores superan –en las secciones censales que los componen- unos determinados valores de referencia con respecto a los valores medios nacionales.
+
+
+El listado de indicadores de vulnerabilidad urbana, según temas, que pueden consultarse en la aplicación web : https://www.mitma.gob.es/areas-de-actividad/arquitectura-vivienda-y-suelo/urbanismo-y-politica-de-suelo/observatorio-de-la-vulnerabilidad-urbana/atlas-de-la-vulnerabilidad-urbana/atlas-de-las-vulnerabilidad-urbana-en-espan%CC%83a
+
+
+## Indice de Privación Multidimensional de Cantabria
+
+La construcción de un indicador se suele basar en 3 fases: 
+
+a) selección de los indicadores o variables a incluir; 
+
+b) definición de las dimensiones conceptuales o dominios, medidos por uno o más indicadores, y 
+
+c) definición del índice, constituido por varias dimensiones. 
+
+La experiencia acumulada en la elaboración de indicadores a niveles censales en España, y la disponibilidad de estadísticos a estos niveles para la ciudad de Santander, determina que en Cantabria optemos por construir un indicador a partir de los siguientes indicadores individuales y dominios:
+
+a) Vulnerabilidad demográfica
+
+Porcentaje de población de 75 años y más.
+
+Porcentaje de hogares unipersonales de mayores de 64 años
+
+Porcentaje de hogares con un adulto y un menor o más.
+
+Porcentaje de población extranjera.
+
+Porcentaje de población extranjera infantil.
+
+b) Vulnerabilidad de vivienda
+
+Porcentaje de viviendas con menos de 30 m²
+
+Superficie media por habitante (m²).
+
+Porcentaje de población en viviendas sin servicio o aseo.
+
+Porcentaje de población en viviendas sin calefación.
+
+Porcentaje viviendas en edificios anteriores a 1951.
+
+Porcentaje de viviendas en alquiler o cesion.
+
+c) Vulnerabilidad social (indicador Medea)
+
+Porcentaje de población en paro. 
+
+Porcentaje de asalariados eventuales.
+
+Porcentaje de trabajadores manuales
+
+Porcentaje de población sin estudios. 
+
+Porcentaje de población juvenil sin estudios. 
+
+d) Pobreza monetaria
+
+Porcentaje de población que cobra la Renta Social Básica
+
+Porcentaje de población que cobra pensiones no contributivas
+
+```{r, include=FALSE}
+# Lectura de indicadores elementales
+
+#setwd("Y:/proyecto medea/Medea III")
+RentaBasica <-read.csv("RentaBasica.csv",header=TRUE,sep = ";",dec=",")
+PNC_2005 <-read.csv("PNC_2005.csv",header=TRUE,sep = ";",dec=",")
+Medea <-read.csv("indicador_medea.csv",header=TRUE,sep = ";",dec=",")
+sociodemo <-read.csv("Vulnerabilidad_sociodemo.csv",header=TRUE,sep = ";",dec=",")
+residencial <-read.csv("Vulnerabilidad_residencial.csv",header=TRUE,sep = ";",dec=",")
+pob_m <- read.csv("pob_m_santander.csv",header=TRUE,sep=";")
+pob_m[is.na(pob_m)] <- 0
+pob_m <- subset(pob_m,pob_m$ano==2005)
+pob_h <- read.csv("pob_h_santander.csv",header=TRUE,sep=";")
+pob_h[is.na(pob_h)] <- 0
+pob_h <- subset(pob_h,pob_h$ano==2005)
+
+```
+
+### Indicador demográfico 2001
+
+Para elaborar el indicador de vivienda se usa el análisis de componentes principales, con la extracción de la primera componente principal, para reducir la dimensión de los indicadores en un solo índice. 
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+demo01=sociodemo[1:124,c(2,4,6,8,10)]
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(demo01))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-demo01
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 7: Componentes Principales del Indicador de demográfico")
+summary(resultados.pc1,loadings=TRUE)
+indicador1.01<-data.frame(CODIGO=sociodemo$SECC[1:124],Indice=resultados.pc1$scores[,1:1])
+```
+
+En la Figura nº 8 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador1.01$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 8. Vulnerabilidad demográfica 2001")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+### Indicador demográfico 2011
+
+Para elaborar el indicador de vivienda se usa el análisis de componentes principales, con la extracción de la primera componente principal, para reducir la dimensión de los indicadores en un solo índice. 
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+demo11=sociodemo[1:124,c(3,5,7,9,11)]
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(demo11))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-demo11
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 9: Componentes Principales del Indicador de demográfico")
+summary(resultados.pc1,loadings=TRUE)
+indicador1.11<-data.frame(CODIGO=sociodemo$SECC[1:124],Indice=resultados.pc1$scores[,1:1])
+```
+
+En la Figura nº 10 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador1.11$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 10. Vulnerabilidad demográfica 2011")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+### Indicador vivienda 2001
+
+Para elaborar el indicador de vivienda se usa el análisis de componentes principales, con la extracción de la primera componente principal, para reducir la dimensión de los indicadores en un solo índice. 
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+residencial01=residencial[,2:6]
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(residencial01))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-residencial01
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 11: Componentes Principales del Indicador de Vivienda")
+summary(resultados.pc1,loadings=TRUE)
+indicador2.01<-data.frame(CODIGO=residencial$SECC,Indice=resultados.pc1$scores[,1:1])
+```
+
+En la Figura nº 12 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador2.01$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 12. Vulnerabilidad vivienda 2001")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+
+
+
+
+### Indicador vivienda 2011
+
+Para elaborar el indicador de vivienda se usa el análisis de componentes principales, con la extracción de la primera componente principal, para reducir la dimensión de los indicadores en un solo índice. 
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+residencial11=residencial[,7:11]
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(residencial11))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-residencial11
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 13: Componentes Principales del Indicador de Vivienda")
+summary(resultados.pc1,loadings=TRUE)
+indicador2.11<-data.frame(CODIGO=residencial$SECC,Indice=resultados.pc1$scores[,1:1])
+```
+
+
+En la Figura nº 14 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador2.11$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 14. Vulnerabilidad vivienda 2011")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+### Indicador social 2001.
+
+
+El indicador social es el indicador de privación construido para Medea. En la Figura nº 15 se Cartografían el indicador para 2001.
+
+
+```{r echo=FALSE}
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(Medea$pr_2001.N.24.15 , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 15. Vulnerabilidad social 2001")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+
+
+
+## Indicador social 2011.
+
+El indicador social es el indicador de privación construido para Medea.. En la Figura nº 16 se Cartografían el indicador para 2011.
+
+
+```{r echo=FALSE}
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(Medea$pr_2011.N.24.15 , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 16. Vulnerabilidad Social 2011")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+### Indicador pobreza monetaria 2001
+
+
+
+En la figura 17 se representa la población que cobra la Renta Social Básica en julio de 2005 en cada sección censal, que es el único ejercicio para el que hemos podido obtener resultados a nivel de sección censal, en la figura 19 se representa, también para ese mismo ejercicio, la población que percibe pensiones no contributivas al 31 de diciembre de 2005, y en la figura 20 el porcentaje de población que percibe las dos rentas sociales en 2005 en cada sección censal de Santander, que es el indicador con el que se va a aproximar la vulnerabilidad monetaria.
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+# Calculamos los indicadores en términos per_capita
+pob_2005=data.frame(hombres=rowSums(pob_h[,5:25]),mujeres=rowSums(pob_m[,5:25]))
+pob_2005$total=pob_2005$hombres+pob_2005$mujeres
+pob_2005$SECC=pob_h[,26]
+PNC_2005$PNCpc=PNC_2005$pnc/pob_2005$total
+PNC_2005$RSBpc=PNC_2005$rbs/pob_2005$total
+PNC_2005$TOTALpc=(PNC_2005$rbs+PNC_2005$pnc)/pob_2005$total
+# Representación gráfica Renta Básica
+par(mar=c(1,1,1,1))
+Cortes <- cut2(PNC_2005$rbs, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 17. Renta Social Básica 2005")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+# Representación gráfica pension contributiva
+par(mar=c(1,1,1,1))
+Cortes <- cut2(PNC_2005$pnc, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 18. Pensiones no Contributivas 2005")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+
+# Cartografío Totales per capita
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(PNC_2005$TOTALpc, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 19. Vulnerabilidad monetaria 2005")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+## Indicador pobreza monetaria 2011
+
+En la Figura 20 se representa la población que cobra la Renta Social Básica en julio de 2017 en cada sección censal, que es el único ejercicio para el que hemos podido obtener resultados a nivel de sección censal, en la Figura 21 se representa, también para ese mismo ejercicio, la población que percibe pensiones no contributivas al 31 de diciembre de 2017, y en la Figura 22 el porcentaje de población que percibe las dos rentas sociales en 2017 en cada sección censal de Santander, que es el indicador con el que se va a aproximar la vulnerabilidad monetaria.
+
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+# Modifico el seccionado
+
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907501011,3907501009,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907502027,3907502014,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907502024,3907502023,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508014,3907502023,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907504012,3907504010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907507021,3907504014,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508001,3907505008,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508017,3907505008,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508026,3907505008,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907507015,3907507013,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907507019,3907507017,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508007,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508018,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508023,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508024,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508028,3907508004,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508009,3907508008,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508011,3907508010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508012,3907508010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508019,3907508010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508027,3907508010,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508022,3907508016,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508029,3907508020,RentaBasica$CODSEC)
+RentaBasica$CODSEC=ifelse(RentaBasica$CODSEC==3907508025,3907508021,RentaBasica$CODSEC)
+
+# obtengo los datos con las nuevas secciones
+
+RBS=tapply(RentaBasica$RBS,RentaBasica$CODSEC,sum)
+PNC=tapply(RentaBasica$PNC,RentaBasica$CODSEC,sum)
+POB=tapply(RentaBasica$POB,RentaBasica$CODSEC,sum)
+SUB=(RBS+PNC)/POB
+RentaBasica2=data.frame(RBS,PNC,POB,SUB)
+
+
+
+
+# Cartografío la renta básica
+
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(RentaBasica2$RBS, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 20. Renta Básica Social 2017")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+
+
+#Cartografío Pensiones No Contributivas
+
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(RentaBasica2$PNC, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 21. Pensiones no Contributivas 2017")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+
+
+
+
+
+#Cartografia Renta Básica y PNC sobre Poblacion
+
+
+par(mar=c(1,1,1,1))
+Cortes <- cut2(RentaBasica2$SUB, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("Figura 22. Vulnerabilidad monetaria 2017")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+legend("bottomright", title=" ",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+
+### Elaboración del Índice de privación compuesto de Cantabria 2001
+
+Para elaborar el índice de privación Multidimensional que combina las 4 dimensiones analizadas previamente, se usa también el análisis de componentes principales, con la extracción de la primera componente principal para reducir la dimensión de los indicadores en un solo índice
+
+
+```{r echo=FALSE}
+indice01=data.frame(demografico=indicador1.01$Indice,vivienda=indicador2.01$Indice,social=Medea$pr_2001.N.24.15,monetario=PNC_2005$TOTALpc)
+cor(indice01)
+```
+
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(indice01))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-indice01
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 23: Componentes Principales del Indicador multidimensional")
+summary(resultados.pc1,loadings=TRUE)
+indicador01<-data.frame(CODIGO=residencial$SECC,Indice=resultados.pc1$scores[,1:1])
+save(indicador01,file="Privacion_CAN_01.Rdata")
+```
+
+
+En la Figura nº 24 se Cartografían los resultados obtenidos.
+
+```{r,echo=FALSE, message=FALSE, warning=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(indicador01$Indice , g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 24. Privación Multidimensional 2001")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+### Elaboración del Índice de privación Multimensional de Cantabria 2011
+
+Para elaborar el índice de privación Multidimensional que combina las 4 dimensiones analizadas previamente, se usa también el análisis de componentes principales, con la extracción de la primera componente principal para reducir la dimensión de los indicadores en un solo índice
+
+
+```{r, include=FALSE}
+
+indice11=data.frame(demografico=indicador1.11$Indice,vivienda=indicador2.11$Indice,social=Medea$pr_2011.N.24.15,monetario=SUB)
+cor(indice11)
+```
+
+
+La prueba de esfericidad de Bartlett evalúa la aplicabilidad del análisis de componentes principales o factorial de las variables estudiadas. El modelo es significativo (aceptamos la hipótesis nula, H0) cuando se puede aplicar el análisis factorial:
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+bartlett.sphere<-function(data){chi.square=-( (dim(data)[1]-1) - (2*dim(data)[2]-5)/6 )* log(det(cor(data,use='pairwise.complete.obs')));cat('chi.square value ', chi.square , ' on ', (dim(data)[2]^2-dim(data)[2])/2, ' degrees of freedom.' , ' p-value: ', 1-pchisq(chi.square,(dim(data)[2]^2-dim(data)[2])/2))}
+bartlett.sphere(data.frame(indice11))
+```
+como el p-valor de la prueba es menor de 0.05 aceptamos H0 (hipótesis nula), y por tanto se puede aplicar el análisis de componentes principales y factorial.
+
+
+Calculo los componentes principales basados en la matriz de correlaciones 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+indicadores.pc1<-indice11
+indicadores.pc1[is.na(indicadores.pc1)]=0
+resultados.pc1<-princomp(indicadores.pc1,cor=TRUE)
+plot(resultados.pc1,main="Figura 25: Componentes Principales del Indicador Multidimensional")
+summary(resultados.pc1,loadings=TRUE)
+indicador11<-data.frame(CODIGO=residencial$SECC,Indice=resultados.pc1$scores[,1:1])
+save(indicador11,file="Privacion_CAN.Rdata")
+```
+
+En la Figura nº 26 se Cartografían los resultados obtenidos.
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(-indicador11$Indice, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 26. Privación Multidimensional 2011")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+# Indicadores medios Medea y Multidimensional
+
+## Privación Medea Media
+
+
+```{r include=FALSE}
+Privacion_medea=(resultado$privacion$privacion_2011+resultado$privacion$privacion_2001)/2
+```
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(Privacion_medea, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 26. Privación Medea Media 2001_2011")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+
+
+## Privación Multidimensional Media
+
+
+
+```{r include=FALSE}
+Privacion_mult=(-indicador11$Indice+indicador01$Indice)/2
+```
+
+```{r echo=FALSE}
+par(mar=c(1,1,1,1))
+Cortes <- cut2(Privacion_mult, g=7)
+valores<-as.numeric(Cortes)
+mypalette<-brewer.pal(7,"Reds")
+mipaleta<-mypalette[length(mypalette):1]
+fgs<-mipaleta[valores]
+plot(Carto,col=fgs,border="grey",xlab="",ylab="",axes=F)
+title(expression(bold("")), sub = "",cex.main = 1.1,font.main= 1,
+col.main= "black")
+title(expression(bold("Figura 26. Privación Multidimensional Media 2001_2011")), sub = "",cex.main =
+1.1,font.main= 1, col.main= "black")
+legend("bottomright", title="",legend=levels(Cortes),fill=mipaleta,
+y.intersp=0.8, cex= 1, bty="n",inset=0.05)
+```
+## Correlacion indicadores 
+
+```{r}
+# Indices media
+cor(Privacion_medea,Privacion_mult)
+# Indices 2001
+cor(resultado$privacion$privacion_2001,indicador01$Indice)
+# Indices 2011
+cor(resultado$privacion$privacion_2011,-indicador11$Indice)
+
+```
+
